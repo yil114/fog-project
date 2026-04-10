@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fog Mirror - Debugged</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        video {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            object-fit: cover; transform: scaleX(-1); z-index: 0;
+        }
+        canvas { position: absolute; top: 0; left: 0; z-index: 1; }
+        #overlay {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; z-index: 10; text-align: center; background: rgba(0,0,0,0.8);
+            padding: 30px; border-radius: 15px; cursor: pointer; border: 2px solid #555;
+        }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <h1 id="status-title">Loading Scripts...</h1>
+    <p id="status-msg">Please wait a moment.</p>
+</div>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const overlay = document.getElementById("overlay");
+const statusTitle = document.getElementById("status-title");
+const statusMsg = document.getElementById("status-msg");
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+let currentFog = 0; 
+let lastX = null;
+let lastY = null;
+let audioContext, analyser, dataArray;
+let blowLevel = 0;
+let isStarted = false;
+
+// Update UI when scripts are loaded
+window.onload = () => {
+    statusTitle.innerText = "Foggy Screen Project";
+    statusMsg.innerText = "CLICK HERE TO START";
+};
+
+async function setupMic() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+        detectBlow();
+    } catch (e) {
+        console.error("Mic error:", e);
+        statusMsg.innerText = "Mic Error: Check permissions in URL bar.";
+    }
+}
+
+function detectBlow() {
+    analyser.getByteFrequencyData(dataArray);
+    let sum = 0;
+    for (let i = 100; i < dataArray.length; i++) { sum += dataArray[i]; }
+    const avg = sum / (dataArray.length - 100);
+    blowLevel = blowLevel * 0.8 + avg * 0.2;
+    if (blowLevel > 40) { 
+        currentFog = Math.min(currentFog + 0.06, 0.95);
+    }
+    requestAnimationFrame(detectBlow);
+}
+
+const hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+});
+
+hands.onResults((results) => {
+    if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0 || currentFog < 0.05) {
+        lastX = null; lastY = null;
+        return;
+    }
+    const landmarks = results.multiHandLandmarks[0];
+    const tip = landmarks[8];
+    const x = (1 - tip.x) * canvas.width;
+    const y = tip.y * canvas.height;
+
+    if (lastX !== null && lastY !== null) {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.lineWidth = 60; 
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(lastX, lastY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+    }
+    lastX = x;
+    lastY = y;
+});
+
+function loop() {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(220, 235, 255, ${currentFog * 0.02})`; 
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (currentFog > 0) currentFog -= 0.0004;
+    requestAnimationFrame(loop);
+}
+
+async function init() {
+    if (isStarted) return;
+    isStarted = true;
+    statusMsg.innerText = "Requesting Camera/Mic...";
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { width: 1280, height: 720 },
+            audio: true 
+        });
+        video.srcObject = stream;
+        await setupMic();
+        
+        const camera = new Camera(video, {
+            onFrame: async () => { await hands.send({ image: video }); },
+            width: 1280, height: 720
+        });
+        
+        camera.start().then(() => {
+            overlay.style.display = "none";
+            loop();
+        });
+
+    } catch (err) {
+        console.error("Init error:", err);
+        statusTitle.innerText = "Startup Failed";
+        statusMsg.innerText = "Check your Camera/Mic permissions and try again.";
+        isStarted = false;
+    }
+}
+
+overlay.addEventListener('click', init);
+</script>
+</body>
+</html>
