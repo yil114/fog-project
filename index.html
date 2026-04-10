@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Digital Steam Mirror</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        
+        video {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            object-fit: cover; transform: scaleX(-1); z-index: 0;
+        }
+
+        canvas { position: absolute; top: 0; left: 0; z-index: 1; }
+
+        /* Modern UI Overlay */
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.85); display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 100;
+            color: white; transition: opacity 0.8s ease;
+        }
+
+        .instruction-card {
+            text-align: center; max-width: 400px; padding: 40px;
+            border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 20px;
+            background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(15px);
+        }
+
+        .step { margin: 20px 0; display: flex; align-items: center; text-align: left; }
+        .icon { font-size: 24px; margin-right: 15px; background: rgba(0, 255, 255, 0.2);
+                padding: 10px; border-radius: 50%; width: 30px; height: 30px;
+                display: flex; justify-content: center; align-items: center; }
+
+        #start-btn {
+            margin-top: 30px; padding: 12px 40px; border-radius: 30px; border: none;
+            background: cyan; color: black; font-weight: bold; cursor: pointer;
+            font-size: 18px; transition: transform 0.2s;
+        }
+        #start-btn:hover { transform: scale(1.05); }
+
+        /* Dynamic Prompt during gameplay */
+        #dynamic-prompt {
+            position: absolute; bottom: 50px; left: 50%; transform: translateX(-50%);
+            color: white; z-index: 10; font-size: 24px; font-weight: bold;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.8); pointer-events: none;
+            transition: opacity 0.5s;
+        }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <div class="instruction-card">
+        <h2 id="status-title">Loading AI...</h2>
+        <div class="step">
+            <div class="icon">🌬️</div>
+            <div><strong>Step 1:</strong> Blow into your mic to fog up the screen.</div>
+        </div>
+        <div class="step">
+            <div class="icon">☝️</div>
+            <div><strong>Step 2:</strong> Use your index finger to wipe the mist.</div>
+        </div>
+        <button id="start-btn">START EXPERIENCE</button>
+    </div>
+</div>
+
+<div id="dynamic-prompt"></div>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const overlay = document.getElementById("overlay");
+const startBtn = document.getElementById("start-btn");
+const promptEl = document.getElementById("dynamic-prompt");
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+let currentFog = 0; 
+let lastX = null;
+let lastY = null;
+let audioContext, analyser, dataArray;
+let blowLevel = 0;
+let isStarted = false;
+
+window.onload = () => { document.getElementById("status-title").innerText = "Fog Mirror Ready"; };
+
+async function setupMic() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(stream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    dataArray = new Uint8Array(analyser.frequencyBinCount);
+    detectBlow();
+}
+
+function detectBlow() {
+    analyser.getByteFrequencyData(dataArray);
+    let sum = 0;
+    for (let i = 100; i < dataArray.length; i++) { sum += dataArray[i]; }
+    const avg = sum / (dataArray.length - 100);
+    blowLevel = blowLevel * 0.8 + avg * 0.2;
+    
+    if (blowLevel > 30) { 
+        currentFog = Math.min(currentFog + 0.05, 0.95);
+    }
+    requestAnimationFrame(detectBlow);
+}
+
+const hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+});
+
+hands.onResults((results) => {
+    if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0 || currentFog < 0.05) {
+        lastX = null; lastY = null;
+        return;
+    }
+    const landmarks = results.multiHandLandmarks[0];
+    const tip = landmarks[8];
+    const x = (1 - tip.x) * canvas.width;
+    const y = tip.y * canvas.height;
+
+    if (lastX !== null && lastY !== null) {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.lineWidth = 65; 
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(lastX, lastY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        promptEl.style.opacity = "0"; // Hide prompt while drawing
+    } else {
+        promptEl.style.opacity = "1";
+    }
+    lastX = x;
+    lastY = y;
+});
+
+function loop() {
+    // 1. Draw/Maintain Fog
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(220, 235, 255, ${currentFog * 0.006})`; // Balanced reseal speed
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 2. Dynamic Text Logic
+    if (currentFog < 0.1) {
+        promptEl.innerText = "🌬️ Blow onto the screen to fog it up...";
+    } else if (currentFog < 0.7) {
+        promptEl.innerText = "Keep blowing!";
+    } else {
+        promptEl.innerText = "☝️ Write on the fog with your finger!";
+    }
+
+    // 3. Slower Evaporation
+    if (currentFog > 0) currentFog -= 0.00015; 
+
+    requestAnimationFrame(loop);
+}
+
+async function init() {
+    if (isStarted) return;
+    isStarted = true;
+    overlay.style.opacity = "0";
+    setTimeout(() => overlay.style.display = "none", 800);
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { width: 1280, height: 720 },
+            audio: true 
+        });
+        video.srcObject = stream;
+        await setupMic();
+        
+        const camera = new Camera(video, {
+            onFrame: async () => { await hands.send({ image: video }); },
+            width: 1280, height: 720
+        });
+        camera.start();
+        loop();
+    } catch (err) {
+        alert("Camera and Mic are required!");
+        isStarted = false;
+        overlay.style.opacity = "1";
+    }
+}
+
+startBtn.addEventListener('click', init);
+</script>
+</body>
+</html>
